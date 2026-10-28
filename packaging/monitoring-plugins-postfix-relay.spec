@@ -3,13 +3,14 @@
 #
 
 Name:           monitoring-plugins-postfix-relay
-Version:        0.1
+Version:        0.2
 Release:        0
 Summary:        Nagios/Icinga plugin to check that Postfix can log in to its relays
 License:        GPL-2.0-or-later
 Group:          System/Monitoring
 URL:            https://github.com/Aikhjarto/check_postfix_relay
 Source:         %{url}/archive/refs/tags/v%{version}.tar.gz#/check_postfix_relay-%{version}.tar.gz
+BuildRequires:  bash
 BuildRequires:  nagios-rpm-macros
 BuildRequires:  python3
 Requires:       postfix
@@ -36,6 +37,7 @@ NOPASSWD sudoers rule; see the README.
 
 %install
 install -D -m 0755 check_postfix_relay %{buildroot}%{nagios_plugindir}/check_postfix_relay
+install -D -m 0644 completions/check_postfix_relay %{buildroot}%{_datadir}/bash-completion/completions/check_postfix_relay
 
 %check
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v
@@ -46,7 +48,13 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v
 %dir %{nagios_libdir}
 %dir %{nagios_plugindir}
 %{nagios_plugindir}/check_postfix_relay
+%dir %{_datadir}/bash-completion
+%dir %{_datadir}/bash-completion/completions
+%{_datadir}/bash-completion/completions/check_postfix_relay
 
 %changelog
+* Wed Oct 28 2026 Thomas Wagner <wagner-thomas@gmx.at>
+- Update to 0.2: bash completion
+
 * Wed Oct 28 2026 Thomas Wagner <wagner-thomas@gmx.at>
 - Initial package of check_postfix_relay 0.1

@@ -1,0 +1,50 @@
+# bash completion for check_postfix_relay                    -*- shell-script -*-
+
+# the senders of sender_dependent_relayhost_maps, as the plugin reads them
+_check_postfix_relay_senders()
+{
+    local postconf postmap table key value
+    postconf=$(PATH=$PATH:/usr/sbin:/sbin command -v postconf) || return
+    postmap=$(PATH=$PATH:/usr/sbin:/sbin command -v postmap) || return
+    for table in $("$postconf" -h sender_dependent_relayhost_maps 2>/dev/null | tr ',' ' '); do
+        while read -r key value; do
+            [[ -n $key && -n $value ]] && printf '%s\n' "$key"
+        done < <("$postmap" -s "$table" 2>/dev/null)
+    done
+}
+
+_check_postfix_relay()
+{
+    local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
+    # --option=value: bash splits at the =
+    if [[ $cur == = ]]; then
+        cur=
+    elif [[ $prev == = && $COMP_CWORD -ge 2 ]]; then
+        prev=${COMP_WORDS[COMP_CWORD-2]}
+    fi
+    COMPREPLY=()
+
+    case $prev in
+        -x)
+            # each sender once: leave out the ones already skipped
+            local senders=() sender word i skip
+            while read -r sender; do
+                skip=
+                for ((i = 1; i < COMP_CWORD; i++)); do
+                    word=${COMP_WORDS[i]}
+                    [[ ${COMP_WORDS[i-1]} == -x && $word == "$sender" ]] && skip=1
+                done
+                [[ -z $skip ]] && senders+=("$sender")
+            done < <(_check_postfix_relay_senders)
+            mapfile -t COMPREPLY < <(compgen -W "${senders[*]}" -- "$cur")
+            return
+            ;;
+        -r | -w | -c | -t)
+            return
+            ;;
+    esac
+
+    # no positional arguments: offer the options
+    mapfile -t COMPREPLY < <(compgen -W '-h --help -r -x -w -c -t -V --version' -- "$cur")
+}
+complete -F _check_postfix_relay check_postfix_relay

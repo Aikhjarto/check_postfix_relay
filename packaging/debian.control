@@ -17,6 +17,8 @@ Depends:
  python3 (>= 3.7)
 Recommends:
  sudo
+Suggests:
+ bash-completion
 Description: Nagios/Icinga plugin to check that Postfix can log in to its relays
  Nagios/Icinga plugin that checks that Postfix can log in to the relays it
  sends through, written in Python 3 with the standard library only.

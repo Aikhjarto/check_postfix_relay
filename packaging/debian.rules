@@ -7,6 +7,7 @@ export PYTHONDONTWRITEBYTECODE=1
 
 override_dh_auto_install:
 	install -D -m 0755 check_postfix_relay debian/monitoring-plugins-postfix-relay/usr/lib/nagios/plugins/check_postfix_relay
+	install -D -m 0644 completions/check_postfix_relay debian/monitoring-plugins-postfix-relay/usr/share/bash-completion/completions/check_postfix_relay
 
 override_dh_auto_test:
 	python3 -m unittest -v

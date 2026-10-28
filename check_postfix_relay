@@ -18,7 +18,7 @@ Usage: check_postfix_relay [-r RCPT] [-x SENDER]... [-w SEC] [-c SEC] [-t SEC]
 """
 import argparse, smtplib, ssl, subprocess, sys, time
 
-VERSION = "0.1"
+VERSION = "0.2"
 
 OK, WARNING, CRITICAL, UNKNOWN = 0, 1, 2, 3
 NAMES = ['OK', 'WARNING', 'CRITICAL', 'UNKNOWN']

@@ -79,7 +79,11 @@ entry, in seconds with the `-w` and `-c` thresholds.
 
 ```sh
 install -D -m 755 check_postfix_relay /usr/lib/nagios/plugins/check_postfix_relay
+install -D -m 644 completions/check_postfix_relay /usr/share/bash-completion/completions/check_postfix_relay
 ```
+
+The bash completion offers the options and, after `-x`, the senders of
+`sender_dependent_relayhost_maps` that are not skipped yet.
 
 The plugin calls `postconf` and `postmap`, so it runs on the Postfix host.
 The SASL password map is readable by root only, so the monitoring user runs
