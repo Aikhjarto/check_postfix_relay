@@ -1,0 +1,4 @@
+# Let the monitoring user run check_postfix_relay as root: it needs to read
+# the SASL password map of Postfix (smtp_sasl_password_maps).
+# Install with mode 440 in /etc/sudoers.d/ and check with visudo -c.
+nagios ALL=(root) NOPASSWD: /usr/lib/nagios/plugins/check_postfix_relay

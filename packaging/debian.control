@@ -1,0 +1,30 @@
+Source: monitoring-plugins-postfix-relay
+Section: net
+Priority: optional
+Maintainer: Thomas Wagner <wagner-thomas@gmx.at>
+Build-Depends:
+ debhelper-compat (= 13),
+ python3
+Standards-Version: 4.6.2
+Homepage: https://github.com/Aikhjarto/check_postfix_relay
+Rules-Requires-Root: no
+
+Package: monitoring-plugins-postfix-relay
+Architecture: all
+Depends:
+ ${misc:Depends},
+ postfix,
+ python3 (>= 3.7)
+Recommends:
+ sudo
+Description: Nagios/Icinga plugin to check that Postfix can log in to its relays
+ Nagios/Icinga plugin that checks that Postfix can log in to the relays it
+ sends through, written in Python 3 with the standard library only.
+ .
+ It tests the relayhost and every relay in sender_dependent_relayhost_maps:
+ connection, STARTTLS and SASL login with the credentials Postfix itself
+ would use (also by sender, smtp_sender_dependent_authentication), and
+ optionally MAIL FROM/RCPT TO without sending. Relays and logins come from
+ the Postfix configuration, so no password is needed in the monitoring
+ configuration. It needs root for the SASL password map, e.g. through a
+ NOPASSWD sudoers rule; see the README.

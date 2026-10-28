@@ -1,0 +1,213 @@
+#!/usr/bin/python3 -I
+# Nagios/Icinga plugin to check that Postfix can log in to its relays.
+#
+# Copyright (C) 2026 Thomas Wagner <wagner-thomas@gmx.at>
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""check_postfix_relay: do the relays configured in Postfix accept our logins?
+
+Tests the relayhost and every relay in sender_dependent_relayhost_maps: connects,
+does EHLO, STARTTLS and AUTH with the credentials Postfix would use for that
+sender (smtp_sasl_password_maps, looked up by sender first if
+smtp_sender_dependent_authentication = yes, then by relay), and optionally
+MAIL FROM/RCPT TO (then RSET, nothing is sent). Each relay and login is tested
+once. Needs root (sudo) for the SASL password map. Never prints credentials.
+
+Usage: check_postfix_relay [-r RCPT] [-x SENDER]... [-w SEC] [-c SEC] [-t SEC]
+  -r RCPT    also test MAIL FROM/RCPT TO with this recipient (no mail is sent)
+  -x SENDER  skip this sender of sender_dependent_relayhost_maps (repeatable)
+"""
+import argparse, smtplib, ssl, subprocess, sys, time
+
+VERSION = "0.1"
+
+OK, WARNING, CRITICAL, UNKNOWN = 0, 1, 2, 3
+NAMES = ['OK', 'WARNING', 'CRITICAL', 'UNKNOWN']
+
+
+def out(code, text, perf='', details=()):
+    print(NAMES[code] + ' - ' + text + (' | ' + perf if perf else ''))
+    for line in details:
+        print(line)
+    sys.exit(code)
+
+
+def postconf(name):
+    return subprocess.run(['postconf', '-h', name], capture_output=True, text=True).stdout.strip()
+
+
+def maps(name):
+    return postconf(name).replace(',', ' ').split()
+
+
+def lookup(key, tables):
+    """first hit of key in the Postfix lookup tables"""
+    for m in tables:
+        r = subprocess.run(['postmap', '-q', key, m], capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    return None
+
+
+def entries(tables):
+    """all (key, value) pairs of tables that can be listed (lmdb, hash, ...)"""
+    for m in tables:
+        r = subprocess.run(['postmap', '-s', m], capture_output=True, text=True)
+        for line in r.stdout.splitlines():
+            key, _, value = line.partition('\t') if '\t' in line else line.partition(' ')
+            if key and value.strip():
+                yield key, value.strip()
+
+
+def parse_relay(relay):
+    """'[host]:port', 'host:port', '[host]' or 'host' -> (host, port); MX lookup is not done"""
+    relay = relay.split(',')[0].strip()
+    if ':' in relay and relay.split(':', 1)[0] in ('smtp', 'relay'):
+        relay = relay.split(':', 1)[1]
+    host, port = relay, None
+    if relay.startswith('['):
+        host, _, rest = relay[1:].partition(']')
+        if rest.startswith(':'):
+            port = rest[1:]
+    elif relay.count(':') == 1:
+        host, port = relay.split(':')
+    return host, int(port) if port else 25
+
+
+def credentials(sender, relay, host, sasl_maps, by_sender):
+    """the login Postfix would use: by sender, then the relay as written, then without the port"""
+    keys = ([sender] if by_sender and sender else []) + [relay, '[%s]' % host, host]
+    for key in keys:
+        cred = lookup(key, sasl_maps)
+        if cred:
+            return cred
+    return None
+
+
+def probe(relay, sender, cred, a, tls_level, wrapper, helo):
+    """(state, text, seconds) of one relay and login"""
+    host, port = parse_relay(relay)
+    ctx = ssl.create_default_context()
+    state, notes = OK, []
+    start = time.monotonic()
+    try:
+        if wrapper:
+            s = smtplib.SMTP_SSL(host, port, local_hostname=helo, timeout=a.timeout, context=ctx)
+        else:
+            s = smtplib.SMTP(host, port, local_hostname=helo, timeout=a.timeout)
+        s.ehlo()
+        tls_on = wrapper
+        if not wrapper:
+            if s.has_extn('starttls') and tls_level != 'none':
+                try:
+                    s.starttls(context=ctx)
+                except ssl.SSLCertVerificationError as e:
+                    # Postfix at 'may'/'encrypt' does not verify either; report, continue unverified
+                    notes.append('certificate not verified (%s)' % e.verify_message)
+                    state = WARNING
+                    s.close()
+                    s = smtplib.SMTP(host, port, local_hostname=helo, timeout=a.timeout)
+                    s.ehlo()
+                    s.starttls(context=ssl._create_unverified_context())
+                s.ehlo()
+                tls_on = True
+            elif tls_level in ('encrypt', 'secure', 'verify', 'dane', 'dane-only', 'fingerprint'):
+                return CRITICAL, '%s:%d offers no STARTTLS, but smtp_tls_security_level=%s' % (host, port, tls_level), 0
+        if cred:
+            if not s.has_extn('auth'):
+                return CRITICAL, '%s:%d offers no AUTH, Postfix would send unauthenticated' % (host, port), 0
+            user, _, pw = cred.partition(':')
+            try:
+                s.login(user, pw)
+            except smtplib.SMTPAuthenticationError as e:
+                return CRITICAL, '%s:%d rejects the login of %s: %d %s' % (
+                    host, port, user, e.smtp_code, e.smtp_error.decode(errors='replace')), 0
+            notes.append('login as %s ok' % user)
+        if a.rcpt and sender:
+            code, msg = s.mail(sender)
+            if code >= 400:
+                return CRITICAL, '%s:%d: MAIL FROM:<%s> rejected: %d %s' % (host, port, sender, code, msg.decode(errors='replace')), 0
+            code, msg = s.rcpt(a.rcpt)
+            if code >= 400:
+                return CRITICAL, '%s:%d: RCPT TO:<%s> rejected: %d %s' % (host, port, a.rcpt, code, msg.decode(errors='replace')), 0
+            s.rset()
+            notes.append('%s -> %s accepted' % (sender, a.rcpt))
+        s.quit()
+    except (OSError, smtplib.SMTPException) as e:
+        return CRITICAL, '%s:%d: %s' % (host, port, e), 0
+    t = time.monotonic() - start
+    if state == OK:
+        state = CRITICAL if t >= a.crit else WARNING if t >= a.warn else OK
+    return state, '%s:%d answers in %.1f s, %s%s' % (
+        host, port, t, 'TLS' if tls_on else 'no TLS', ', ' + ', '.join(notes) if notes else ''), t
+
+
+class ArgumentParser(argparse.ArgumentParser):
+    """argparse exits 2 on a usage error, which Nagios reads as CRITICAL; exit UNKNOWN instead."""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        out(UNKNOWN, '%s: %s' % (self.prog, message))
+
+
+def main():
+    ap = ArgumentParser(prog='check_postfix_relay',
+                        description='Check that the relays configured in Postfix accept its logins.')
+    ap.add_argument('-r', dest='rcpt', metavar='RCPT',
+                    help='also test MAIL FROM/RCPT TO with this recipient (no mail is sent)')
+    ap.add_argument('-x', dest='skip', action='append', default=[], metavar='SENDER',
+                    help='skip this sender of sender_dependent_relayhost_maps; repeatable')
+    ap.add_argument('-w', dest='warn', type=float, default=5, metavar='SEC',
+                    help='warning if a relay takes this long (default: 5)')
+    ap.add_argument('-c', dest='crit', type=float, default=15, metavar='SEC',
+                    help='critical if a relay takes this long (default: 15)')
+    ap.add_argument('-t', dest='timeout', type=float, default=25, metavar='SEC',
+                    help='timeout of each connection (default: 25)')
+    ap.add_argument('-V', '--version', action='version', version='check_postfix_relay %s' % VERSION)
+    a = ap.parse_args()
+
+    tls_level = postconf('smtp_tls_security_level') or 'none'
+    wrapper = postconf('smtp_tls_wrappermode') == 'yes'
+    sasl = postconf('smtp_sasl_auth_enable') == 'yes'
+    by_sender = postconf('smtp_sender_dependent_authentication') == 'yes'
+    sasl_maps = maps('smtp_sasl_password_maps')
+    helo = postconf('smtp_helo_name') or postconf('myhostname')
+
+    # (label, sender, relay): the relayhost for senders without an entry, then each sender's relay
+    targets = []
+    relayhost = postconf('relayhost')
+    if relayhost:
+        default_sender = (lookup('root', maps('sender_canonical_maps'))
+                          or 'root@' + postconf('myhostname')) if a.rcpt else None
+        targets.append(('relayhost', default_sender, relayhost))
+    for sender, relay in entries(maps('sender_dependent_relayhost_maps')):
+        if sender not in a.skip:
+            targets.append((sender, sender, relay))
+    if not targets:
+        out(OK, 'no relayhost configured, Postfix delivers directly')
+
+    results, seen = [], set()
+    for label, sender, relay in targets:
+        host, _ = parse_relay(relay)
+        cred = credentials(sender if label != 'relayhost' else None, relay, host, sasl_maps, by_sender) if sasl else None
+        if sasl and not cred:
+            results.append((UNKNOWN, label, 'no credentials for %s in %s (run as root?)' % (relay, ' '.join(sasl_maps)), 0))
+            continue
+        login = cred.partition(':')[0] if cred else None
+        if (relay, login) in seen and not a.rcpt:
+            continue
+        seen.add((relay, login))
+        state, text, t = probe(relay, sender, cred, a, tls_level, wrapper, helo)
+        results.append((state, label, text, t))
+
+    worst = max(r[0] for r in results)
+    bad = [r for r in results if r[0] != OK]
+    if bad:
+        summary = '; '.join('%s: %s' % (label, text) for _, label, text, _ in bad)
+    else:
+        summary = '%d relay login(s) ok' % len(results)
+    perf = ' '.join("'%s'=%.3fs;%g;%g;0" % (label, t, a.warn, a.crit) for state, label, _, t in results if t)
+    out(worst, summary, perf, ['%s %s: %s' % (NAMES[s], label, text) for s, label, text, _ in results])
+
+
+if __name__ == '__main__':
+    main()
